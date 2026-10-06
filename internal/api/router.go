@@ -27,6 +27,8 @@ func NewServer(services *Services) *Server {
 		r.Get("/spans/{id}", server.getSpan)
 		r.Post("/routes/{id}/switchovers", server.startSwitchover)
 		r.Get("/routes/{id}", server.getRoute)
+		r.Get("/routes/{id}/capacity-budget", server.getCapacityBudget)
+		r.Post("/spans/{id}/path-repeaters", server.assignPathRepeaters)
 		r.Post("/landings/{id}/feed-isolations", server.startIsolation)
 		r.Post("/landings/{id}/feed-receipts", server.recordReceipt)
 		r.Get("/landings/{id}/feed-receipts", server.listReceipts)

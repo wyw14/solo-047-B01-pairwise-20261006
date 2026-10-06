@@ -24,6 +24,15 @@ type ScanRequest struct {
 
 type SwitchoverRequest struct {
 	Reason string `json:"reason"`
+	// Force overrides a soft (elevated/high) capacity-guard risk. Blocked
+	// capacity and insufficient/uncertain evidence cannot be forced.
+	Force bool `json:"force"`
+}
+
+// PathRepeatersRequest binds a repeater chain to one path of a span.
+type PathRepeatersRequest struct {
+	Path        string   `json:"path"`
+	RepeaterIDs []string `json:"repeater_ids"`
 }
 
 type IsolationRequest struct {

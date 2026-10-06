@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wyw14/cry-103/internal/capacity"
 	"github.com/wyw14/cry-103/internal/feed"
 	"github.com/wyw14/cry-103/internal/incident"
 	"github.com/wyw14/cry-103/internal/landing"
@@ -45,6 +46,8 @@ type Services struct {
 	Ramps               *repeater.RampController
 	Assets              *repair.Assets
 	RepeaterHealth      *repeater.HealthProjector
+	Capacity            *capacity.Service
+	PathInventory       *capacity.PathInventory
 	Actuator            *feed.Actuator
 	Tests               map[string]*repair.TestSession
 	Incidents           map[string]*incident.Incident
@@ -125,4 +128,73 @@ func (s *Services) TelemetryHistory(assetID string) []telemetry.Sample {
 		_ = latest
 	}
 	return items
+}
+
+// SpanSnapshot implements capacity.SnapshotSource.
+func (s *Services) SpanSnapshot(id string) (span.Snapshot, bool) {
+	target, err := s.Span(id)
+	if err != nil || target == nil {
+		return span.Snapshot{}, false
+	}
+	return target.Snapshot(), true
+}
+
+// RouteSnapshot implements capacity.SnapshotSource.
+func (s *Services) RouteSnapshot(id string) (route.Snapshot, bool) {
+	target, err := s.Route(id)
+	if err != nil || target == nil {
+		return route.Snapshot{}, false
+	}
+	return target.Snapshot(), true
+}
+
+// TopologySnapshot implements capacity.SnapshotSource.
+func (s *Services) TopologySnapshot(spanID string) (topology.Snapshot, bool) {
+	if s.Topology == nil {
+		return topology.Snapshot{}, false
+	}
+	snapshot, err := s.Topology.Snapshot(spanID)
+	if err != nil {
+		return topology.Snapshot{}, false
+	}
+	return snapshot, true
+}
+
+// RepeaterSnapshot implements capacity.SnapshotSource.
+func (s *Services) RepeaterSnapshot(id string) (repeater.Snapshot, bool) {
+	target, err := s.Repeater(id)
+	if err != nil || target == nil {
+		return repeater.Snapshot{}, false
+	}
+	return target.Snapshot(), true
+}
+
+// LatestErrorRate implements capacity.SnapshotSource. The returned sample
+// carries its own generation, which the estimator binds to the topology.
+func (s *Services) LatestErrorRate(repeaterID string) (telemetry.Sample, bool) {
+	if s.TelemetryRepository == nil {
+		return telemetry.Sample{}, false
+	}
+	return s.TelemetryRepository.Latest(repeaterID, telemetry.KindErrorRate)
+}
+
+// AssignPathRepeaters binds a repeater chain to a span path so the capacity
+// estimator knows which repeaters belong to primary versus protection.
+func (s *Services) AssignPathRepeaters(spanID string, path topology.Path, repeaterIDs []string) error {
+	if s.PathInventory == nil {
+		return fmt.Errorf("capacity path inventory is not configured")
+	}
+	if _, ok := s.Spans[spanID]; !ok {
+		return fmt.Errorf("span %s not found", spanID)
+	}
+	if path != topology.PathPrimary && path != topology.PathProtection {
+		return fmt.Errorf("unsupported path %q", path)
+	}
+	for _, repeaterID := range repeaterIDs {
+		if _, ok := s.Repeaters[repeaterID]; !ok {
+			return fmt.Errorf("repeater %s not registered", repeaterID)
+		}
+	}
+	s.PathInventory.Assign(spanID, path, repeaterIDs...)
+	return nil
 }

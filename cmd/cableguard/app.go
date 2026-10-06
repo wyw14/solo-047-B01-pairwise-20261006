@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/wyw14/cry-103/internal/api"
+	"github.com/wyw14/cry-103/internal/capacity"
 	"github.com/wyw14/cry-103/internal/feed"
 	"github.com/wyw14/cry-103/internal/incident"
 	"github.com/wyw14/cry-103/internal/landing"
@@ -61,13 +62,37 @@ func buildServices(cfg config) (*api.Services, error) {
 		return nil, err
 	}
 	healthProjector.Register(repeaterR07)
+	repeaterR08, err := repeater.New("R08", now())
+	if err != nil {
+		return nil, err
+	}
+	healthProjector.Register(repeaterR08)
 	ingestor := telemetry.NewIngestor(telemetryRepository, now, healthProjector)
 
 	scanner := landing.NewScanner(topologies, 2*time.Millisecond)
 	otdrService := otdr.NewSessionService(topologies, scanner, ids, now)
 	drainer := route.NewDrainer(4 * time.Millisecond)
 	activator := route.NewActivator(topologies)
-	switchovers := switchover.NewSessionService(drainer, activator, ids, now, 25*time.Millisecond)
+
+	// Capacity budgeting. Estimates are bound to telemetry time and the
+	// topology generation; the gate refuses a switch the protection path
+	// cannot carry and refuses auto-expansion on insufficient evidence.
+	pathInventory := capacity.NewPathInventory()
+	estimator, err := capacity.NewEstimator(capacity.Config{
+		Staleness:     30 * time.Second,
+		LoadFactor:    0.8,
+		BaseCapacity:  400_000_000_000, // 400 Gbps design capacity per lossless span
+		MaxBER:        1e-12,
+		HotDerate:     0.7,
+		TrippedDerate: 0.0,
+	})
+	if err != nil {
+		return nil, err
+	}
+	lazySource := &lazyCapacitySource{}
+	capacityBuilder := capacity.NewBuilder(lazySource, pathInventory, now, 30*time.Second)
+	capacityService := capacity.NewService(capacityBuilder, estimator)
+	switchovers := switchover.NewSessionService(drainer, activator, capacityService, ids, now, 25*time.Millisecond)
 	restorer := switchover.NewRestorer(drainer, activator, topologies, ids, now)
 
 	receipts := landing.NewReceiptRegistry()
@@ -113,17 +138,50 @@ func buildServices(cfg config) (*api.Services, error) {
 	ramps := repeater.NewRampController(actuator, telemetryRepository, telemetry.StabilityWindow{MinimumSamples: 2, MaximumSpread: 1.5, MinimumPeriod: time.Second}, checkpoints, now)
 	wetPlantTests := repair.NewTestService(mutes, ids, now, 30*time.Second)
 
-	return &api.Services{
+	services := &api.Services{
 		Clock: clock, IDs: ids, Journal: journal,
 		Spans: map[string]*span.Span{"S3": spanS3}, Routes: map[string]*route.Route{"R-S3": routeS3},
-		Repeaters: map[string]*repeater.Repeater{"R07": repeaterR07}, Topology: topologies,
+		Repeaters: map[string]*repeater.Repeater{"R07": repeaterR07, "R08": repeaterR08}, Topology: topologies,
 		OTDR: otdrService, Switchovers: switchovers, Permits: permits, Receipts: receipts,
 		Acceptance: acceptance, Telemetry: ingestor, TelemetryRepository: telemetryRepository, Admission: admission,
 		Classifier: incident.NewClassifier(), Correlator: otdr.NewCorrelator(), Health: health, Station: station,
 		WetPlantTests: wetPlantTests, Ramps: ramps, Assets: assets,
-		RepeaterHealth: healthProjector, Actuator: actuator,
+		RepeaterHealth: healthProjector, Capacity: capacityService, PathInventory: pathInventory, Actuator: actuator,
 		Tests: make(map[string]*repair.TestSession), Incidents: make(map[string]*incident.Incident),
-	}, nil
+	}
+	// The capacity builder reads live snapshots; wire it to the fully built
+	// services graph and seed the primary/protection repeater chains.
+	lazySource.services = services
+	pathInventory.Assign("S3", topology.PathPrimary, "R07")
+	pathInventory.Assign("S3", topology.PathProtection, "R08")
+	return services, nil
+}
+
+// lazyCapacitySource breaks the construction cycle between the capacity
+// builder (needed to build the switchover service) and api.Services (which
+// holds the repositories the builder reads from).
+type lazyCapacitySource struct {
+	services *api.Services
+}
+
+func (s *lazyCapacitySource) SpanSnapshot(id string) (span.Snapshot, bool) {
+	return s.services.SpanSnapshot(id)
+}
+
+func (s *lazyCapacitySource) RouteSnapshot(id string) (route.Snapshot, bool) {
+	return s.services.RouteSnapshot(id)
+}
+
+func (s *lazyCapacitySource) TopologySnapshot(spanID string) (topology.Snapshot, bool) {
+	return s.services.TopologySnapshot(spanID)
+}
+
+func (s *lazyCapacitySource) RepeaterSnapshot(id string) (repeater.Snapshot, bool) {
+	return s.services.RepeaterSnapshot(id)
+}
+
+func (s *lazyCapacitySource) LatestErrorRate(repeaterID string) (telemetry.Sample, bool) {
+	return s.services.LatestErrorRate(repeaterID)
 }
 
 func permitsCircuit(service *repair.PermitService, stationID, circuitID string) (*feed.Circuit, bool) {
