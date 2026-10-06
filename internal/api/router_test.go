@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wyw14/cry-103/internal/capacity"
 	"github.com/wyw14/cry-103/internal/feed"
 	"github.com/wyw14/cry-103/internal/incident"
 	"github.com/wyw14/cry-103/internal/landing"
@@ -59,6 +60,32 @@ func testServer(t *testing.T) *Server {
 	repository := telemetry.NewRepository()
 	acceptance := repair.NewAcceptanceService(switchover.NewRestorer(drainer, activator, registry, ids, clock.Now), clock.Now)
 	acceptance.Register("S3", target, path)
+	capacityCfg := capacity.DefaultConfig()
+	capacityCfg.MaxTelemetryAge = time.Hour
+	capacityEstimator, err := capacity.NewEstimator(capacityCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capacityInventories := capacity.NewInventoryStore()
+	capacityService, err := capacity.NewService(capacityEstimator, registry, capacityInventories, clock.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := capacityInventories.Put(capacity.Inventory{
+		SpanID: "S3", Generation: 1,
+		Primary: capacity.PathSpec{
+			Path: topology.PathPrimary, LengthKM: 126,
+			Repeaters: []capacity.RepeaterState{{ID: "R07", Health: "healthy"}},
+			BER:       1e-12, BERObservedAt: clock.Now(), BERGeneration: 1,
+		},
+		Protection: capacity.PathSpec{
+			Path: topology.PathProtection, LengthKM: 132,
+			Repeaters: []capacity.RepeaterState{{ID: "R08", Health: "healthy"}},
+			BER:       1e-12, BERObservedAt: clock.Now(), BERGeneration: 1,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	services := &Services{
 		Clock: clock, IDs: ids, Journal: store.NewJournal(filepath.Join(t.TempDir(), "events.jsonl")),
 		Spans: map[string]*span.Span{"S3": target}, Routes: map[string]*route.Route{"R-S3": path},
@@ -68,6 +95,7 @@ func testServer(t *testing.T) *Server {
 		Permits:     permitService, Receipts: receipts, Acceptance: acceptance,
 		Telemetry: telemetry.NewIngestor(repository, clock.Now, projector), TelemetryRepository: repository,
 		Admission: incident.NewAdmissionService(telemetry.NewMuteManager(clock.Now)),
+		Capacity:  capacityService, CapacityInventories: capacityInventories,
 	}
 	return NewServer(services)
 }

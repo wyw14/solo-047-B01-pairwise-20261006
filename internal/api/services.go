@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wyw14/cry-103/internal/capacity"
 	"github.com/wyw14/cry-103/internal/feed"
 	"github.com/wyw14/cry-103/internal/incident"
 	"github.com/wyw14/cry-103/internal/landing"
@@ -46,6 +47,8 @@ type Services struct {
 	Assets              *repair.Assets
 	RepeaterHealth      *repeater.HealthProjector
 	Actuator            *feed.Actuator
+	Capacity            *capacity.Service
+	CapacityInventories *capacity.InventoryStore
 	Tests               map[string]*repair.TestSession
 	Incidents           map[string]*incident.Incident
 	mu                  sync.RWMutex

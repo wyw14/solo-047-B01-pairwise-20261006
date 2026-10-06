@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/wyw14/cry-103/internal/api"
+	"github.com/wyw14/cry-103/internal/capacity"
 	"github.com/wyw14/cry-103/internal/feed"
 	"github.com/wyw14/cry-103/internal/incident"
 	"github.com/wyw14/cry-103/internal/landing"
@@ -62,6 +63,41 @@ func buildServices(cfg config) (*api.Services, error) {
 	}
 	healthProjector.Register(repeaterR07)
 	ingestor := telemetry.NewIngestor(telemetryRepository, now, healthProjector)
+
+	capacityConfig := capacity.DefaultConfig()
+	capacityConfig.MaxTelemetryAge = 30 * time.Second
+	capacityEstimator, err := capacity.NewEstimator(capacityConfig)
+	if err != nil {
+		return nil, err
+	}
+	capacityInventories := capacity.NewInventoryStore()
+	capacityService, err := capacity.NewService(capacityEstimator, topologies, capacityInventories, now)
+	if err != nil {
+		return nil, err
+	}
+	seedGeneration, err := topologies.Generation("S3")
+	if err != nil {
+		return nil, err
+	}
+	if err := capacityInventories.Put(capacity.Inventory{
+		SpanID: "S3", Generation: seedGeneration,
+		Primary: capacity.PathSpec{
+			Path: topology.PathPrimary, LengthKM: spanS3.Snapshot().LengthKM,
+			Repeaters:     []capacity.RepeaterState{{ID: repeaterR07.Snapshot().ID, Health: string(repeaterR07.Snapshot().Health)}},
+			BER:           1e-9,
+			BERObservedAt: now(),
+			BERGeneration: seedGeneration,
+		},
+		Protection: capacity.PathSpec{
+			Path: topology.PathProtection, LengthKM: spanS3.Snapshot().LengthKM + 4.8,
+			Repeaters:     []capacity.RepeaterState{{ID: "R08", Health: "healthy"}},
+			BER:           1e-8,
+			BERObservedAt: now(),
+			BERGeneration: seedGeneration,
+		},
+	}); err != nil {
+		return nil, err
+	}
 
 	scanner := landing.NewScanner(topologies, 2*time.Millisecond)
 	otdrService := otdr.NewSessionService(topologies, scanner, ids, now)
@@ -122,6 +158,7 @@ func buildServices(cfg config) (*api.Services, error) {
 		Classifier: incident.NewClassifier(), Correlator: otdr.NewCorrelator(), Health: health, Station: station,
 		WetPlantTests: wetPlantTests, Ramps: ramps, Assets: assets,
 		RepeaterHealth: healthProjector, Actuator: actuator,
+		Capacity: capacityService, CapacityInventories: capacityInventories,
 		Tests: make(map[string]*repair.TestSession), Incidents: make(map[string]*incident.Incident),
 	}, nil
 }

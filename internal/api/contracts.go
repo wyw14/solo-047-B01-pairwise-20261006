@@ -77,3 +77,21 @@ type IncidentRequest struct {
 	DistanceKM   float64 `json:"distance_km"`
 	RequiresPeer bool    `json:"requires_peer"`
 }
+
+// CapacityPathInput binds the physical/telemetry picture of one fibre path.
+// ObservedAt may be omitted, in which case the server clock is used.
+type CapacityPathInput struct {
+	LengthKM    float64   `json:"length_km"`
+	RepeaterIDs []string  `json:"repeater_ids"`
+	BER         float64   `json:"ber"`
+	ObservedAt  time.Time `json:"observed_at"`
+}
+
+type CapacityInventoryRequest struct {
+	Primary    CapacityPathInput `json:"primary"`
+	Protection CapacityPathInput `json:"protection"`
+}
+
+type ExpansionRequest struct {
+	RequestedBPS int64 `json:"requested_bps"`
+}
